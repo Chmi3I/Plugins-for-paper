@@ -1,0 +1,112 @@
+//MAIN
+
+package dev.felix.antiesp;
+
+import org.bukkit.Bukkit;
+import org.bukkit.Material;
+import org.bukkit.block.Block;
+import org.bukkit.Chunk;
+import org.bukkit.Location;
+import org.bukkit.entity.Player;
+import org.bukkit.event.Listener;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.player.PlayerMoveEvent;
+import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.scheduler.BukkitRunnable;
+
+import com.comphenix.protocol.ProtocolLibrary;
+import com.comphenix.protocol.ProtocolManager;
+import com.comphenix.protocol.events.PacketAdapter;
+import com.comphenix.protocol.events.PacketEvent;
+import com.comphenix.protocol.events.PacketType;
+
+import java.util.Set;
+
+public class AntiESPPlugin extends JavaPlugin implements Listener {
+
+    private ProtocolManager protocolManager;
+    private int detectionRadius;
+    private static final Set<Material> PROTECTED_BLOCKS = Set.of(
+        Material.CHEST,
+        Material.BARREL,
+        Material.ENDER_CHEST,
+        Material.TRAPPED_CHEST
+    );
+
+    @Override
+    public void onEnable() {
+        saveDefaultConfig();
+        detectionRadius = getConfig().getInt("detection-radius", 16);
+
+        protocolManager = ProtocolLibrary.getProtocolManager();
+
+        Bukkit.getPluginManager().registerEvents(this, this);
+
+        new VisibilityTask().runTaskTimer(this, 0L, 40L); // co 2 sekundy
+
+        // Przykładowy PacketListener ukrywający graczy spoza zasięgu
+        protocolManager.addPacketListener(new PacketAdapter(this, PacketType.Play.Server.ENTITY_METADATA) {
+            @Override
+            public void onPacketSending(PacketEvent event) {
+                Player receiver = event.getPlayer();
+                int radiusSquared = detectionRadius * detectionRadius;
+
+                Player target = null;
+                try {
+                    // refleksja po id entity
+                    int entityId = event.getPacket().getIntegers().read(0);
+                    for (Player online : Bukkit.getOnlinePlayers()) {
+                        if (online.getEntityId() == entityId) {
+                            target = online;
+                            break;
+                        }
+                    }
+                } catch (Exception ignored) {}
+
+                if (target != null && receiver.getLocation().distanceSquared(target.getLocation()) > radiusSquared) {
+                    event.setCancelled(true);
+                }
+            }
+        });
+    }
+
+    private class VisibilityTask extends BukkitRunnable {
+        @Override
+        public void run() {
+            for (Player observer : Bukkit.getOnlinePlayers()) {
+
+                // Ukrywanie lub pokazywanie graczy
+                for (Player target : Bukkit.getOnlinePlayers()) {
+                    if (observer.equals(target)) continue;
+
+                    boolean sameWorld = observer.getWorld().equals(target.getWorld());
+                    boolean closeEnough = observer.getLocation().distanceSquared(target.getLocation()) <= detectionRadius * detectionRadius;
+
+                    if (sameWorld && closeEnough) {
+                        observer.showPlayer(AntiESPPlugin.this, target);
+                    } else {
+                        observer.hidePlayer(AntiESPPlugin.this, target);
+                    }
+                }
+
+                // Ukrywanie "cennych" bloków przez pakiet (wizualnie)
+                Chunk chunk = observer.getLocation().getChunk();
+
+                for (int x = 0; x < 16; x++) {
+                    for (int y = 0; y < observer.getWorld().getMaxHeight(); y++) {
+                        for (int z = 0; z < 16; z++) {
+                            Location loc = new Location(observer.getWorld(), chunk.getX() * 16 + x, y, chunk.getZ() * 16 + z);
+                            Block block = loc.getBlock();
+
+                            if (!PROTECTED_BLOCKS.contains(block.getType())) continue;
+                            if (loc.distanceSquared(observer.getLocation()) <= detectionRadius * detectionRadius) continue;
+
+                            observer.sendBlockChange(loc, Material.AIR.createBlockData());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+}
