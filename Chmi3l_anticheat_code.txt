@@ -1,0 +1,347 @@
+//MAIN
+package pl.chmi3l.anticheat;
+
+import com.comphenix.protocol.ProtocolLibrary;
+import com.comphenix.protocol.ProtocolManager;
+import org.bukkit.Bukkit;
+import org.bukkit.plugin.java.JavaPlugin;
+
+public class Chmi3lAntiCheat extends JavaPlugin {
+
+    private static Chmi3lAntiCheat instance;
+    private ProtocolManager protocolManager;
+    private CheatDetectionSystem cheatDetection;
+    private PlayerDataManager playerDataManager;
+    private ConfigManager configManager;
+
+    @Override
+    public void onEnable() {
+        instance = this;
+        
+        // Sprawdzenie ProtocolLib
+        if (!checkProtocolLib()) {
+            getLogger().severe("ProtocolLib nie jest zainstalowany! Plugin zostanie wyłączony.");
+            Bukkit.getPluginManager().disablePlugin(this);
+            return;
+        }
+
+        // Inicjalizacja
+        this.protocolManager = ProtocolLibrary.getProtocolManager();
+        this.configManager = new ConfigManager(this);
+        this.playerDataManager = new PlayerDataManager(this);
+        this.cheatDetection = new CheatDetectionSystem(this);
+
+        // Rejestracja komendy
+        getCommand("anticheat").setExecutor(new AntiCheatCommand(this));
+
+        // Rejestracja kurwa nwm tych zuli 
+        registerListeners();
+        
+        // Tworzenie pliku config jeśli nie istnieje
+        configManager.setupConfig();
+
+        getLogger().info("Chmi3l AntiCheat 1.21.1 został włączony!");
+    }
+
+    @Override
+    public void onDisable() {
+        getLogger().info("Chmi3l AntiCheat został wyłączony!");
+    }
+
+    private boolean checkProtocolLib() {
+        return Bukkit.getPluginManager().getPlugin("ProtocolLib") != null;
+    }
+
+    private void registerListeners() {
+        new MovementListener(this);
+        new CombatListener(this);
+        new PacketListener(this);
+    }
+
+    public static Chmi3lAntiCheat getInstance() {
+        return instance;
+    }
+
+    public ProtocolManager getProtocolManager() {
+        return protocolManager;
+    }
+
+    public CheatDetectionSystem getCheatDetection() {
+        return cheatDetection;
+    }
+
+    public PlayerDataManager getPlayerDataManager() {
+        return playerDataManager;
+    }
+
+    public ConfigManager getConfigManager() {
+        return configManager;
+    }
+}
+
+//CONFIG MANAGER
+
+package pl.chmi3l.anticheat;
+
+import org.bukkit.configuration.file.FileConfiguration;
+import org.bukkit.configuration.file.YamlConfiguration;
+import org.bukkit.plugin.java.JavaPlugin;
+
+import java.io.File;
+import java.io.IOException;
+
+public class ConfigManager {
+
+    private final JavaPlugin plugin;
+    private FileConfiguration config;
+    private File configFile;
+
+    public ConfigManager(JavaPlugin plugin) {
+        this.plugin = plugin;
+    }
+
+    public void setupConfig() {
+        if (!plugin.getDataFolder().exists()) {
+            plugin.getDataFolder().mkdir();
+        }
+
+        configFile = new File(plugin.getDataFolder(), "config.yml");
+
+        if (!configFile.exists()) {
+            plugin.saveResource("config.yml", false);
+            plugin.getLogger().info("Utworzono nowy plik config.yml");
+        }
+
+        reloadConfig();
+    }
+
+    public void reloadConfig() {
+        config = YamlConfiguration.loadConfiguration(configFile);
+        
+        // Ustawienia domyślne jeśli brak
+        setDefault("checks.movement.speed.enabled", true);
+        setDefault("checks.movement.speed.threshold", 5);
+        setDefault("checks.movement.speed.sensitivity", 1.0);
+        setDefault("checks.movement.fly.enabled", true);
+        setDefault("checks.movement.fly.threshold", 3);
+        
+        setDefault("checks.combat.reach.enabled", true);
+        setDefault("checks.combat.reach.max-distance", 3.2);
+        setDefault("checks.combat.reach.threshold", 4);
+        
+        setDefault("checks.combat.autoclick.enabled", true);
+        setDefault("checks.combat.autoclick.max-cps", 15);
+        setDefault("checks.combat.autoclick.threshold", 5);
+        
+        setDefault("punishments.kick.enabled", true);
+        setDefault("punishments.kick.message", "&cZostałeś wyrzucony za podejrzenie używania oszustw!");
+        setDefault("punishments.ban.enabled", false);
+        setDefault("punishments.ban.message", "&cZostałeś zbanowany za używanie oszustw!");
+        
+        setDefault("alerts.enabled", true);
+        setDefault("alerts.message", "&8[&cAntiCheat&8] &7%player% &eflaga &c%check% &7(%details%)");
+        setDefault("alerts.permission", "anticheat.alerts");
+        
+        saveConfig();
+    }
+
+    private void setDefault(String path, Object value) {
+        if (!config.contains(path)) {
+            config.set(path, value);
+        }
+    }
+
+    public void saveConfig() {
+        try {
+            config.save(configFile);
+        } catch (IOException e) {
+            plugin.getLogger().severe("Nie można zapisać pliku config.yml: " + e.getMessage());
+        }
+    }
+
+    public FileConfiguration getConfig() {
+        return config;
+    }
+
+    // Gettery dla różnych ustawień
+    public boolean isCheckEnabled(String check) {
+        return config.getBoolean("checks." + check + ".enabled", true);
+    }
+
+    public int getThreshold(String check) {
+        return config.getInt("checks." + check + ".threshold", 5);
+    }
+
+    public double getSensitivity(String check) {
+        return config.getDouble("checks." + check + ".sensitivity", 1.0);
+    }
+
+    public boolean isKickEnabled() {
+        return config.getBoolean("punishments.kick.enabled", true);
+    }
+
+    public String getKickMessage() {
+        return config.getString("punishments.kick.message");
+    }
+
+    public boolean isBanEnabled() {
+        return config.getBoolean("punishments.ban.enabled", false);
+    }
+
+    public String getBanMessage() {
+        return config.getString("punishments.ban.message");
+    }
+
+    public boolean isAlertsEnabled() {
+        return config.getBoolean("alerts.enabled", true);
+    }
+
+    public String getAlertMessage() {
+        return config.getString("alerts.message");
+    }
+
+    public String getAlertsPermission() {
+        return config.getString("alerts.permission");
+    }
+}
+
+//CHEAT DETECTION SYSTEM
+
+package pl.chmi3l.anticheat;
+
+import org.bukkit.entity.Player;
+import pl.chmi3l.anticheat.data.PlayerData;
+
+public class CheatDetectionSystem {
+
+    private final Chmi3lAntiCheat plugin;
+    private final ConfigManager config;
+
+    public CheatDetectionSystem(Chmi3lAntiCheat plugin) {
+        this.plugin = plugin;
+        this.config = plugin.getConfigManager();
+    }
+
+    public void flag(Player player, String check, String details) {
+        PlayerData data = plugin.getPlayerDataManager().getData(player);
+        data.addViolation(check);
+
+        // Wysyłanie alertów
+        if (config.isAlertsEnabled()) {
+            sendAlert(player, check, details);
+        }
+
+        // Sprawdzanie czy przekroczono próg
+        checkViolations(player, check, data);
+    }
+
+    private void sendAlert(Player player, String check, String details) {
+        String message = config.getAlertMessage()
+                .replace("%player%", player.getName())
+                .replace("%check%", check)
+                .replace("%details%", details);
+
+        Bukkit.getOnlinePlayers().stream()
+                .filter(p -> p.hasPermission(config.getAlertsPermission()))
+                .forEach(p -> p.sendMessage(message));
+    }
+
+    private void checkViolations(Player player, String check, PlayerData data) {
+        int violations = data.getViolations(check);
+        int threshold = config.getThreshold(check);
+
+        if (violations >= threshold) {
+            executePunishment(player, check);
+            data.resetViolations(check);
+        }
+    }
+
+    private void executePunishment(Player player, String check) {
+        if (config.isKickEnabled()) {
+            player.kickPlayer(config.getKickMessage());
+        } else if (config.isBanEnabled()) {
+            Bukkit.getBanList(BanList.Type.NAME).addBan(
+                    player.getName(),
+                    config.getBanMessage(),
+                    null,
+                    "Chmi3lAntiCheat"
+            );
+            player.kickPlayer(config.getBanMessage());
+        }
+    }
+
+    // Metody wykrywania konkretnych oszustw
+    public void checkSpeed(Player player, PlayerData data) {
+        if (!config.isCheckEnabled("movement.speed")) return;
+
+        double maxSpeed = 0.36 * config.getSensitivity("movement.speed");
+        if (data.getSpeed() > maxSpeed) {
+            flag(player, "Speed", "Prędkość: " + String.format("%.2f", data.getSpeed()));
+        }
+    }
+
+    public void checkFly(Player player, PlayerData data) {
+        if (!config.isCheckEnabled("movement.fly")) return;
+
+        if (data.isFlying() && !player.getAllowFlight()) {
+            flag(player, "Fly", "Ticków w powietrzu: " + data.getAirTicks());
+        }
+    }
+
+    public void checkReach(Player player, PlayerData data) {
+        if (!config.isCheckEnabled("combat.reach")) return;
+
+        double maxReach = config.getDouble("checks.combat.reach.max-distance", 3.2);
+        if (data.getLastAttackReach() > maxReach) {
+            flag(player, "Reach", "Zasięg: " + String.format("%.2f", data.getLastAttackReach()));
+        }
+    }
+
+    public void checkAutoClick(Player player, PlayerData data) {
+        if (!config.isCheckEnabled("combat.autoclick")) return;
+
+        int maxCPS = config.getInt("checks.combat.autoclick.max-cps", 15);
+        if (data.getCPS() > maxCPS) {
+            flag(player, "AutoClick", "CPS: " + data.getCPS());
+        }
+    }
+}
+
+//COMMANDS
+
+package pl.chmi3l.anticheat;
+
+import org.bukkit.command.Command;
+import org.bukkit.command.CommandExecutor;
+import org.bukkit.command.CommandSender;
+
+public class AntiCheatCommand implements CommandExecutor {
+
+    private final Chmi3lAntiCheat plugin;
+
+    public AntiCheatCommand(Chmi3lAntiCheat plugin) {
+        this.plugin = plugin;
+    }
+
+    @Override
+    public boolean onCommand(CommandSender sender, Command cmd, String label, String[] args) {
+        if (args.length == 0) {
+            sender.sendMessage("§8[§cChmi3l AntiCheat§8] §7Wersja: §f1.21.1");
+            sender.sendMessage("§7/anticheat reload §8- §fPrzeładuj konfigurację");
+            return true;
+        }
+
+        if (args[0].equalsIgnoreCase("reload")) {
+            if (!sender.hasPermission("anticheat.admin")) {
+                sender.sendMessage("§cNie masz uprawnień!");
+                return true;
+            }
+
+            plugin.getConfigManager().reloadConfig();
+            sender.sendMessage("§aKonfiguracja przeładowana!");
+            return true;
+        }
+
+        return false;
+    }
+}
